@@ -6,13 +6,16 @@
 --
 -- The message shape (also described in README.md):
 --
---   { "v": 1, "from": "<name>", "to": ["<name>", ...], "kind": "chat"|"send",
---     "text": "<body, never parsed for routing>", "why": "<optional>",
---     "c": { "<tag key>": <value>, ... } }
+--   { "v": 1, "from": "<name>", "to": ["<name>", ...], "kind": "chat"|"send"|"json",
+--     "body": <string for chat/send; an object or array for json>,
+--     "why": "<optional>", "c": { "<tag key>": <value>, ... } }
+--
+--   The body is never parsed for routing. A json body is a nested message
+--   (any JSON protocol), forwarded as its exact original bytes.
 --
 -- Two layers, two standards:
 --
---   * The ENVELOPE (v, from, to, kind, text, why) is mailboat's own schema.
+--   * The ENVELOPE (v, from, to, kind, body, why) is mailboat's own schema.
 --     It is checked strictly, and an unknown top-level key is refused,
 --     because anything a router ignores is something a backend might not.
 --
@@ -38,8 +41,8 @@ M.MAX_CELLS = 16
 M.NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]*$"
 M.NAME_MAX = 64
 
-local ENVELOPE_KEYS = { v = true, from = true, to = true, kind = true, text = true, why = true, c = true }
-local KINDS = { chat = true, send = true }
+local ENVELOPE_KEYS = { v = true, from = true, to = true, kind = true, body = true, why = true, c = true }
+local KINDS = { chat = true, send = true, json = true }
 
 -- Closed lists for the status token (spec 7.3). Each maps a value to its
 -- canonical form, so a list can carry aliases if a schema ever needs them.
@@ -218,13 +221,21 @@ function M.validate(value, opts)
   end
 
   if type(value.kind) ~= "string" or not KINDS[value.kind:lower()] then
-    return nil, "kind must be 'chat' or 'send'"
+    return nil, "kind must be 'chat', 'send' or 'json'"
   end
-  if type(value.text) ~= "string" then return nil, "text must be a string" end
+  local kind = value.kind:lower()
+  local body_kind = json.kind(value.body)
+  if kind == "json" then
+    if body_kind ~= "object" and body_kind ~= "array" then
+      return nil, "body must be an object or an array when kind is 'json'"
+    end
+  elseif body_kind ~= "string" then
+    return nil, "body must be a string when kind is '" .. kind .. "'"
+  end
   if value.why ~= nil and type(value.why) ~= "string" then return nil, "why must be a string" end
 
   local msg = {
-    from = from, to = to, kind = value.kind:lower(),
+    from = from, to = to, kind = kind,
     cells = {}, readback = {}, tags = {},
     priority = "none", action_asked = false,
     scope = nil, scope_route = "local",

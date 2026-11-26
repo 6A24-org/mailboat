@@ -25,6 +25,7 @@ HAProxy is found on PATH; override with MAILBOAT_HAPROXY=/path/to/haproxy.
 """
 import json
 import os
+import re
 import pathlib
 import shutil
 import socket
@@ -117,7 +118,7 @@ VALID = [
     b'"plain"', b'"\\u00e9"', b'"\\ud83d\\ude00"', '"café \U0001F600"'.encode(),
     b'"\\"\\\\\\/\\b\\f\\n\\r\\t"', b' \t\r\n{"a" : [1, 2.5, "x", null, true]} \n',
     b'{"v":1,"from":"alice","to":["bob"],"kind":"chat",'
-    b'"text":"the body","c":{"x":"mesh:node1:example.org","p":["self-done-read"]}}',
+    b'"body":"the body","c":{"x":"mesh:node1:example.org","p":["self-done-read"]}}',
     b'{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{}}}',
     b'[[[[[[[[[[1]]]]]]]]]]',
     b'{"a":{"a":{"a":1}}}',            # the same key at different levels is fine
@@ -167,7 +168,7 @@ INVALID = [
 
 # --- the c: envelope (mailboat_c.lua) -----------------------------------------------
 def msg(**over):
-    m = {"v": 1, "from": "alice", "to": ["bob"], "kind": "chat", "text": "hello"}
+    m = {"v": 1, "from": "alice", "to": ["bob"], "kind": "chat", "body": "hello"}
     for k, v in over.items():
         if v is DROP:
             m.pop(k, None)
@@ -178,6 +179,7 @@ def msg(**over):
 
 DROP = object()
 BASE = "OK from=alice to=bob kind=chat "
+FROM, TO = re.match(r"OK from=(\S+) to=(\S+) ", BASE).groups()
 
 # (body, expected line, or prefix ending in "*")
 C_VECTORS = [
@@ -226,6 +228,9 @@ C_VECTORS = [
     (msg(c={"p": ["self-banana-read=iu", "self-done-read=x"]}), BASE + "prio=x class=1 *"),
     (msg(c={"p": "self-done-read=zz"}),
      BASE + "prio=none class=0 aa=0 route=local scope=- cells=self-done-read rb=priority '=zz' is not known; ignored"),
+    # a BARE tri-part cell has no form in JSON: as a key of c it is just an unknown key,
+    # kept and ignored, never read as a status cell
+    (msg(c={"other-working-flight": True}), BASE + "prio=none class=0 aa=0 route=local scope=- cells= rb="),
     # unknown c keys are kept, never refused (spec 7.2 rule 6); keys match WHOLE
     (msg(c={"place": "the-garden-room", "pending": "x", "pp": "self-done-read"}),
      BASE + "prio=none class=0 aa=0 route=local scope=- cells= rb="),
@@ -240,7 +245,7 @@ C_VECTORS = [
     # REFUSED: the envelope is mailboat's own and is strict
     (msg(extra=1), "ERR unknown top-level key 'extra'"),
     (msg(v=2), "ERR v must be the integer 1"),
-    (b'{"v":1.0,"from":"a","to":["b"],"kind":"chat","text":""}', "ERR v must be the integer 1"),
+    (b'{"v":1.0,"from":"a","to":["b"],"kind":"chat","body":""}', "ERR v must be the integer 1"),
     (msg(v=DROP), "ERR v must be the integer 1"),
     (msg(**{"from": "bad name"}), "ERR from is not a valid name"),
     (msg(**{"from": "-leading"}), "ERR from is not a valid name"),
@@ -250,8 +255,8 @@ C_VECTORS = [
     (msg(to=["a,b"]), "ERR to[0] is not a valid name"),
     (msg(to=["A", "A"]), "ERR recipient 'A' listed twice"),
     (msg(to=["d%d" % i for i in range(17)]), "ERR too many recipients"),
-    (msg(kind="wake"), "ERR kind must be 'chat' or 'send'"),
-    (msg(text=DROP), "ERR text must be a string"),
+    (msg(kind="wake"), "ERR kind must be 'chat', 'send' or 'json'"),
+    (msg(body=DROP), "ERR body must be a string when kind is 'chat'"),
     (msg(why=3), "ERR why must be a string"),
     (msg(c=[]), "ERR c must be an object"),
     (msg(c={"p": 3}), "ERR c.p must be a string or an array of strings"),
@@ -264,6 +269,16 @@ C_VECTORS = [
     (msg(c={"x": "mesh:no.de:example.org"}), "ERR c.x: only the organisation may contain a dot"),
     (msg(c={"x": "a:b:c:d"}), "ERR c.x: scope has more than three parts"),
     (msg(c={"x": "a:b:c"}), "ERR c.x: scope has too many parts before the organisation"),
+    # kind json: the body is a nested message, an object or an array
+    (msg(kind="json", body={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+     "OK from=%s to=%s kind=json prio=none *" % (FROM, TO)),
+    (msg(kind="json", body=[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]),
+     "OK from=%s to=%s kind=json prio=none *" % (FROM, TO)),
+    (msg(kind="json", body="not nested"), "ERR body must be an object or an array when kind is 'json'"),
+    (msg(kind="json", body=3), "ERR body must be an object or an array when kind is 'json'"),
+    (msg(kind="send", body={"a": 1}), "ERR body must be a string when kind is 'send'"),
+    # the old field name is refused clearly, never silently ignored
+    (msg(body=DROP, text="hello"), "ERR unknown top-level key 'text'"),
     # not an object at all: a JSON-RPC style batch, or a bare value
     (b'[{"v":1}]', "ERR message must be a JSON object"),
     (b'"hello"', "ERR message must be a JSON object"),
@@ -322,6 +337,13 @@ class Echo(http.server.BaseHTTPRequestHandler):
 
 class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # HAProxy's health checker may hang up before a 503 is fully written.
+        # That is expected, not a failure, so it is not printed.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def request(sock_path, method, path, body=b"", headers=None):
@@ -395,7 +417,7 @@ def run_e2e(tmp):
         # 1. A valid message reaches the backend BYTE FOR BYTE, with the routing
         #    headers set by mailboat, never by the sender.
         exact = ('{ "v":1, "from":"alice", "to":["bob","carol"],\n'
-                 '  "kind":"send", "text":"caf\u00e9 \\u0041 > quoted\\n<<<END>>>",\n'
+                 '  "kind":"send", "body":"caf\u00e9 \\u0041 > quoted\\n<<<END>>>",\n'
                  '  "c":{"p":["self-pnding-flight=iu"], "x":"mesh:node1:example.org"} }').encode("utf-8")
         st, hd, body = request(front, "POST", "/v1/msg", exact,
                                {"X-Mailboat-From": "mallory", "X-Mailboat-Priority": "iu"})
@@ -433,7 +455,7 @@ def run_e2e(tmp):
         unread = "c:unfamiliar c:p=other-pending-out"
         refused("broken JSON", b'{"v":1,', 400, unread, "json")
         refused("duplicate key (parser differential)",
-                b'{"v":1,"from":"a","to":["b"],"kind":"chat","text":"","text":"x"}', 400, unread, "duplicate key")
+                b'{"v":1,"from":"a","to":["b"],"kind":"chat","body":"","body":"x"}', 400, unread, "duplicate key")
         refused("bad envelope", msg(kind="wake"), 400, unread, "kind")
         refused("federation", msg(c={"x": "mesh:node2:example.org"}), 403,
                 "c:p=self-cancel-flight c:cause=operator", "federation route not configured")
@@ -459,6 +481,32 @@ def run_e2e(tmp):
         if RECEIVED:
             e2e_check("planted readback: stripped", "x-mailboat-readback" not in RECEIVED[0][1],
                       repr(RECEIVED[0][1].get("x-mailboat-readback")))
+
+        # 3c. kind json: the envelope is forwarded untouched, and the two headers
+        #     locate the nested message so the backend can take an EXACT slice.
+        inner = b'{ "jsonrpc":"2.0",  "id":7, "method":"tools/call",\n  "params":{"name":"caf\xc3\xa9","x":1.50} }'
+        outer = (b'{"v":1,"from":"' + FROM.encode() + b'","to":["' + TO.encode() + b'"],"kind":"json",\n'
+                 b'  "body":   ' + inner + b'  ,"why":"nested", "c":{"body":"decoy at depth 2"}}')
+        RECEIVED.clear()
+        st, hd, _ = request(front, "POST", "/v1/msg", outer, {"X-Mailboat-Body-Offset": "0"})
+        e2e_check("json: delivered", st == 200, repr(st))
+        if RECEIVED:
+            _, bh, bbody = RECEIVED[0]
+            e2e_check("json: envelope forwarded byte for byte", bbody == outer, repr(bbody[:60]))
+            try:
+                off, ln = int(bh.get("x-mailboat-body-offset", "")), int(bh.get("x-mailboat-body-length", ""))
+                e2e_check("json: slice is exactly the nested message", bbody[off:off + ln] == inner,
+                          repr(bbody[off:off + ln][:60]))
+            except ValueError:
+                e2e_check("json: offset and length headers present", False, repr(bh))
+            e2e_check("json: kind header", bh.get("x-mailboat-kind") == "json", repr(bh.get("x-mailboat-kind")))
+        # ...and a chat message carries no body-offset header, even if the sender planted one
+        RECEIVED.clear()
+        request(front, "POST", "/v1/msg", msg(), {"X-Mailboat-Body-Offset": "5", "X-Mailboat-Body-Length": "9"})
+        if RECEIVED:
+            e2e_check("chat: planted body-offset stripped",
+                      "x-mailboat-body-offset" not in RECEIVED[0][1] and "x-mailboat-body-length" not in RECEIVED[0][1],
+                      repr(RECEIVED[0][1]))
 
         # 4. Health passes through to the backend.
         st, hd, body = request(front, "GET", "/health")

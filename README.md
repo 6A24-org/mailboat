@@ -40,13 +40,14 @@ It also caps nesting depth and body size. A body larger than HAProxy's buffer ar
   "from": "sender-name",
   "to": ["recipient-a", "recipient-b"],
   "kind": "chat",
-  "text": "the body, carried verbatim and never parsed for routing",
+  "body": "the message, carried verbatim and never parsed for routing",
   "why": "optional",
   "c": { "x": "system:name:example.org", "p": ["self-pending-flight=iu"], "action-asked": true }
 }
 ```
 
-- **The envelope** (`v`, `from`, `to`, `kind`, `text`, `why`, `c`) is checked strictly, and an unknown top-level key is refused.
+- **The envelope** (`v`, `from`, `to`, `kind`, `body`, `why`, `c`) is checked strictly, and an unknown top-level key is refused.
+- **`kind`** says what the body is: `chat` or `send` for a text message (`body` is a string), or `json` for a nested JSON message in any protocol (`body` is an object or an array; see below).
 - **The `c` object** follows the 6A24 Protocol's own reading rules:
   - Unknown tag keys are kept, not refused.
   - Keys are matched whole and case-insensitively.
@@ -55,13 +56,22 @@ It also caps nesting depth and body size. A body larger than HAProxy's buffer ar
 - **Scope** (`c.x`): a message scoped exactly to this system routes locally. Any other scope routes to federation, which this version refuses with 403 until it is configured deliberately.
 - **Priority** comes from the status cells (`=iu`, `=i`, `=u`, `=x`, or box numbers 1 to 4) and becomes HAProxy's request priority class. Priority orders the queue; it never bypasses a check.
 
-## Carrying other JSON protocols: never strip, slice
+## Carrying other JSON protocols: `kind: "json"`
 
-The envelope can carry any JSON agent protocol: put the foreign message (an agent-to-agent message, an MCP request) inside it, route on the envelope, and forward the inner message.
+The envelope can carry any JSON agent protocol (an agent-to-agent message, an MCP request, a model API call). Set `kind` to `json` and put the foreign message in `body`, as a nested object or array. Mailboat routes on the envelope and never parses the body for routing.
 
-**Do not do this by deleting the mailboat keys and re-serialising the body.** Re-encoding changes bytes: key order, whitespace, number formatting, escape choices. The backend would then receive a message the sender never sent, and two parsers would read it differently again, which is the very problem the strict decoder exists to close. Mailboat's guarantee is that **the bytes the sender wrote are the bytes the backend receives**.
+**The nested message reaches the backend byte for byte.** Mailboat forwards the request untouched and adds two headers saying exactly where the body value sits in it:
 
-The safe way, planned and not yet built: carry the foreign message as **one nested value** (for example `"payload": {...}`). The decoder records where that value starts and ends in the original body, and mailboat forwards **exactly that slice**, untouched. The other option is to carry the envelope in headers, with the untouched inner message as the body.
+| header | value |
+|---|---|
+| `x-mailboat-body-offset` | where the body value starts, as a 0-based byte offset |
+| `x-mailboat-body-length` | how many bytes it spans |
+
+The backend takes that slice, and it has exactly the message the sender wrote. Values the sender supplied for these headers are always removed first.
+
+**Never strip the envelope by deleting keys and re-serialising.** Re-encoding changes bytes: key order, whitespace, number formatting, escape choices. The backend would then receive a message the sender never sent, and two parsers would read it differently again, which is the very problem the strict decoder exists to close.
+
+Stripping the envelope inside the proxy, so the backend receives only the nested message, needs an HAProxy Lua *filter* rather than an action. That is planned, not yet built.
 
 ## Replies carry the proxy's own status
 
@@ -99,7 +109,7 @@ python3 tests/test_mailboat.py        # needs only Python 3 and HAProxy on PATH
 MAILBOAT_HAPROXY=/path/to/haproxy python3 tests/test_mailboat.py
 ```
 
-There are 175 checks, run **inside HAProxy**:
+There are 186 checks, run **inside HAProxy**:
 - the decoder against Python's `json`, including the inputs Python accepts and mailboat must refuse;
 - the schema;
 - end to end against a recording backend. These check that the body arrives byte for byte, that sender-supplied routing headers are stripped, that a CR LF in a value cannot inject a header, that refusals never reach the backend, and that an unhealthy backend closes the door.

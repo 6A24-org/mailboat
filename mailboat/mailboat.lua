@@ -31,6 +31,8 @@
 --   mb_prio_class  int     for http-request set-priority-class
 --   mb_action_asked bool
 --   mb_readback    string  what was read generously, header-safe
+--   mb_body_offset int     kind json only: where the body value starts in the
+--   mb_body_length int     request body (0-based) and how many bytes it spans
 --
 -- Settings, read once at load from the environment:
 --   MAILBOAT_LOCAL_SCOPE  this system's c:x scope (default: none, so any
@@ -99,7 +101,8 @@ local function mailboat(txn)
   end
   local body = txn.f:req_body() or ""
 
-  local value, err = json.decode(body, { max_bytes = MAX_BYTES })
+  local spans = {}
+  local value, err = json.decode(body, { max_bytes = MAX_BYTES, spans = spans })
   if value == nil then
     return refuse(txn, 400, CELL_UNREADABLE, "json " .. err)
   end
@@ -127,6 +130,12 @@ local function mailboat(txn)
   txn:set_var("txn.mb_prio_class", msg.priority_class)
   txn:set_var("txn.mb_action_asked", msg.action_asked)
   txn:set_var("txn.mb_readback", header_safe(table.concat(msg.readback, "; ")))
+  if msg.kind == "json" then
+    -- The nested message is forwarded as its exact original bytes: the
+    -- backend takes this slice of the request body. Nothing is re-encoded.
+    txn:set_var("txn.mb_body_offset", spans.body.offset)
+    txn:set_var("txn.mb_body_length", spans.body.length)
+  end
 end
 
 core.register_action("mailboat", { "http-req" }, mailboat, 0)

@@ -26,6 +26,10 @@
 --   local value, err = json.decode(body, { max_depth = 32, max_bytes = 65536 })
 --   if value == nil then -- err is "offset N: reason"
 --
+-- Pass opts.spans = {} to learn where each TOP-LEVEL member's value sits in
+-- the original bytes: spans[key] = { offset = <0-based>, length = <bytes> }.
+-- That is how a nested message is forwarded byte for byte, never re-encoded.
+--
 -- Objects are tables with metatable json.OBJECT; arrays are tables with
 -- metatable json.ARRAY and a field n (their length, since null elements are
 -- json.null). json.kind(v) returns "object", "array", "string", "number",
@@ -204,7 +208,7 @@ end
 
 local parse_value
 
-local function parse_object(s, i, depth, max_depth)
+local function parse_object(s, i, depth, max_depth, spans)
   if depth > max_depth then fail(i, "too deep") end
   local obj = setmetatable({}, M.OBJECT)
   local j = skip_ws(s, i + 1)
@@ -218,7 +222,12 @@ local function parse_object(s, i, depth, max_depth)
     j = skip_ws(s, j)
     if byte(s, j) ~= 0x3A then fail(j, "expected ':'") end
     local v
-    v, j = parse_value(s, skip_ws(s, j + 1), depth, max_depth)
+    local vstart = skip_ws(s, j + 1)
+    v, j = parse_value(s, vstart, depth, max_depth)
+    if spans and depth == 1 then
+      -- where this top-level value sits in the original bytes (0-based offset)
+      spans[key] = { offset = vstart - 1, length = j - vstart }
+    end
     obj[key] = v
     j = skip_ws(s, j)
     local b = byte(s, j)
@@ -246,9 +255,9 @@ local function parse_array(s, i, depth, max_depth)
   end
 end
 
-parse_value = function(s, i, depth, max_depth)
+parse_value = function(s, i, depth, max_depth, spans)
   local b = byte(s, i)
-  if b == 0x7B then return parse_object(s, i, depth + 1, max_depth) end
+  if b == 0x7B then return parse_object(s, i, depth + 1, max_depth, spans) end
   if b == 0x5B then return parse_array(s, i, depth + 1, max_depth) end
   if b == 0x22 then return parse_string(s, i) end
   if b == 0x2D or (b and b >= 0x30 and b <= 0x39) then return parse_number(s, i) end
@@ -266,7 +275,7 @@ function M.decode(s, opts)
   if type(s) ~= "string" then return nil, "offset 0: not a string" end
   if #s > max_bytes then return nil, "offset 0: body too large" end
   local ok, value, j = pcall(function()
-    local v, k = parse_value(s, skip_ws(s, 1), 0, max_depth)
+    local v, k = parse_value(s, skip_ws(s, 1), 0, max_depth, opts.spans)
     return v, skip_ws(s, k)
   end)
   if not ok then
