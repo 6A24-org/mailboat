@@ -200,8 +200,10 @@ C_VECTORS = [
     (msg(c={"P": "self-done-read"}, kind="CHAT"), BASE + "prio=none class=0 aa=0 route=local scope=- cells=self-done-read rb="),
     # a question binds to the cell
     (msg(c={"p": "other-done-out?"}), BASE + "prio=none class=0 aa=0 route=local scope=- cells=other-done-out? rb="),
-    # retired values map on input (spec 7.3)
-    (msg(c={"p": "int-wait-comp"}), BASE + "prio=none class=0 aa=0 route=local scope=- cells=self-pending-flight rb="),
+    # values outside the lists (here the old int/wait/comp forms) are kept and reported, never refused
+    (msg(c={"p": "int-wait-comp"}),
+     BASE + "prio=none class=0 aa=0 route=local scope=- cells=!int-wait-comp "
+            "rb=party 'int' is not a known value;status 'wait' is not a known value;action 'comp' is not a known value"),
     # READ GENEROUSLY: one edit from exactly one value, reported in the readback
     (msg(c={"p": "self-pnding-flight"}),
      BASE + "prio=none class=0 aa=0 route=local scope=- cells=self-pending-flight rb=status 'pnding' read as 'pending'"),
@@ -214,9 +216,6 @@ C_VECTORS = [
      BASE + "prio=none class=0 aa=0 route=local scope=- cells=!self-banana-read rb=status 'banana' is not a known value"),
     (msg(c={"p": "just-two"}),
      BASE + "prio=none class=0 aa=0 route=local scope=- cells=!just-two rb=cell 'just-two' is not party-status-action"),
-    # close to TWO values (int=self, ext=other): asked about, never guessed
-    (msg(c={"p": "ent-done-read"}),
-     BASE + "prio=none class=0 aa=0 route=local scope=- cells=!ent-done-read rb=party 'ent' is close to more than one value"),
     # the readback is header-safe: '%' first, then CR LF and other controls
     (msg(c={"p": "self-x\r\nX-Evil: 1-read"}),
      BASE + "prio=none class=0 aa=0 route=local scope=- cells=!self-x\r\nX-Evil: 1-read "

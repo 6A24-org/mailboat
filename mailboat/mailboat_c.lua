@@ -41,13 +41,12 @@ M.NAME_MAX = 64
 local ENVELOPE_KEYS = { v = true, from = true, to = true, kind = true, text = true, why = true, c = true }
 local KINDS = { chat = true, send = true }
 
--- Closed lists for the status token (spec 7.3), with retired values mapped.
-local PARTY = { self = "self", other = "other", shared = "shared",
-                int = "self", ext = "other", joint = "shared" }
+-- Closed lists for the status token (spec 7.3). Each maps a value to its
+-- canonical form, so a list can carry aliases if a schema ever needs them.
+local PARTY = { self = "self", other = "other", shared = "shared" }
 local STATUS = { pending = "pending", working = "working", hold = "hold", done = "done",
-                 cancel = "cancel", wait = "pending" }
-local ACTION = { read = "read", ack = "ack", flight = "flight", out = "out",
-                 comp = "flight", prog = "flight" }
+                 cancel = "cancel" }
+local ACTION = { read = "read", ack = "ack", flight = "flight", out = "out" }
 local PRIORITY = { iu = "iu", ui = "iu", i = "i", u = "u", x = "x",
                    ["1"] = "iu", ["2"] = "i", ["3"] = "u", ["4"] = "x" }
 -- Lower number = served first (HAProxy priority classes order ascending).

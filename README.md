@@ -52,7 +52,6 @@ It also caps nesting depth and body size. A body larger than HAProxy's buffer ar
   - Keys are matched whole and case-insensitively.
   - A status value that is one edit from exactly one valid value is **read as that value**, and the reading is reported back (`status 'pnding' read as 'pending'`).
   - A value close to two values, or to none, is kept and reported, and never refused.
-  - Retired values are mapped on input.
 - **Scope** (`c.x`): a message scoped exactly to this system routes locally. Any other scope routes to federation, which this version refuses with 403 until it is configured deliberately.
 - **Priority** comes from the status cells (`=iu`, `=i`, `=u`, `=x`, or box numbers 1 to 4) and becomes HAProxy's request priority class. Priority orders the queue; it never bypasses a check.
 
@@ -107,7 +106,7 @@ There are 175 checks, run **inside HAProxy**:
 
 Every check family was mutation-tested: the code was broken deliberately and the suite had to catch it.
 
-**Known gap:** the configuration's last-resort rule (`deny 500` for a message the action did not accept) has no input that reaches it, so no test exercises it. The request priority class is set but its effect on queueing is not measured.
+**Known gap:** the "close to two values" path in the generous reading has no test vector, because no value in the current lists sits one edit from two others; the code path is kept for future schemas. The configuration's last-resort rule (`deny 500` for a message the action did not accept) has no input that reaches it, so no test exercises it. The request priority class is set but its effect on queueing is not measured.
 
 **Observed:** HAProxy 3.2 itself percent-encodes control characters when a sample is written into a header. Mailboat encodes them as well, for front ends that use its variables some other way.
 
